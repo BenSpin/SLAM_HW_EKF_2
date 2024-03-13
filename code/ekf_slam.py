@@ -175,10 +175,8 @@ def predict(X, P, control, control_cov, k):
     # Add the landmarks to the predicted state
     X_pre[3:] = X[3:]
 
-    R = np.concatenate((control_cov, np.zeros((3,2*k))), axis=1)
-    R = np.concatenate((R, np.zeros((2*k,2*k+3))), axis=0)
-    print('This is R')
-    print(R)
+    R = np.block([[control_cov, np.zeros((3,2*k))],
+                    [np.zeros((2*k,3)), np.zeros((2*k,2*k))]])
 
     # This is the jacobian of the pose prediction to the pose
     Gt = np.array([[1, 0, -d * np.sin(theta_t)],
