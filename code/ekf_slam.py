@@ -85,7 +85,9 @@ def warp2pi(angle_rad):
 
     \param angle_rad Input angle in radius
     \return angle_rad_warped Warped angle to [-\pi, \pi].
+    
     """
+    angle_rad = angle_rad - 2 * np.pi * np.floor((angle_rad + np.pi) / (2 * np.pi))
     return angle_rad
 
 
@@ -101,13 +103,55 @@ def init_landmarks(init_measure, init_measure_cov, init_pose, init_pose_cov):
     \return landmarks Numpy array of shape (2k, 1) for the state.
     \return landmarks_cov Numpy array of shape (2k, 2k) for the uncertainty.
     '''
+    # There are 6 landmarks
+    # data.txt gives [beta1, r1,beta2,r2,...] for each landmark and then [d, alpha] for each control
+    # the lines are in sequential time order 
 
     k = init_measure.shape[0] // 2
 
-    landmark = np.zeros((2 * k, 1))
-    landmark_cov = np.zeros((2 * k, 2 * k))
+    landmarks = np.zeros((2 * k, 1))
+    landmarks_cov = np.zeros((2 * k, 2 * k))
 
-    return k, landmark, landmark_cov
+    x, y, theta = init_pose.flatten()
+
+    for i in range(k):
+        beta, r = init_measure[2*i,0], init_measure[2*i+1,0]
+        global_beta = float(warp2pi(beta + theta))
+        # print('This is global_beta')
+        # print(global_beta)
+       
+        lx = x + r * np.cos(global_beta)
+        # print('This is lx')
+        # print(lx)
+        ly = y + r * np.sin(global_beta)
+        # print('This is ly')
+        # print(ly)
+
+        landmarks[2*i,0] = lx
+        landmarks[2*i+1,0] = ly
+
+        # This will be a 2k*3 matrix and is the Jacobian of the landmark coordinates to the robot pose
+        Jp = np.array([[1, 0, -r * np.sin(global_beta)],
+                        [0, 1, r * np.cos(global_beta)]])
+
+        # This will end up as a 2k*2k matrix and is the Jacobian of the landmark coordinates to bearing and range
+        Jk = np.array([[-r * np.sin(global_beta), np.cos(global_beta)],
+                      [r * np.cos(global_beta), np.sin(global_beta)]])
+        
+        
+        # Combine the two matricies
+        J = np.hstack((Jp, Jk))
+        # print(np.shape(J))
+
+        # Combine the inital pose covariance and the measurement covariance
+        P = np.block([[init_pose_cov, np.zeros((3, 2))],
+                        [np.zeros((2, 3)), init_measure_cov]])
+
+
+        landmarks_cov[2*i:2*i+2, 2*i:2*i+2] = J @ P @ J.T
+    
+
+    return k, landmarks, landmarks_cov
 
 
 def predict(X, P, control, control_cov, k):
@@ -122,8 +166,51 @@ def predict(X, P, control, control_cov, k):
     \return X_pre Predicted X state of shape (3 + 2k, 1).
     \return P_pre Predicted P covariance of shape (3 + 2k, 3 + 2k).
     '''
+    # control comes in as [d,alpha]
+    d , alpha = control[0], control[1]
+    x_t, y_t, theta_t = X[0,0], X[1,0], X[2,0]
+    X_pre = np.zeros((3+2*k,1))
+    P_pre = np.zeros((3+2*k,3+2*k))
 
-    return X, P
+    # This is the predicted pose
+    # Predicted x
+    X_pre[0] = x_t + d * np.cos(theta_t)
+    # Predicted y
+    X_pre[1] = y_t + d * np.sin(theta_t)
+    # Predicted theta
+    X_pre[2] = warp2pi(theta_t + alpha)
+    # Add the landmarks to the predicted state
+    X_pre[3:] = X[3:]
+
+    R = np.concatenate((control_cov, np.zeros((3,2*k))), axis=1)
+    R = np.concatenate((R, np.zeros((2*k,2*k+3))), axis=0)
+
+    
+    # This is the jacobian of the pose prediction to the error in the control
+    Jt = np.array([[np.cos(theta_t), -np.sin(theta_t), 0],
+                [np.sin(theta_t), np.cos(theta_t), 0],
+                [0, 0, 1]])
+    
+    # Adding zeros and identity matrix to the jacobians to account for the landmarks
+    B = np.block([[Jt, np.zeros((3,2*k))],
+                    [np.zeros((2*k,3)), np.eye((2*k))]])
+    
+    Gt = np.block([[Jt, np.zeros((3,2*k))],
+                    [np.zeros((2*k,3)), np.eye((2*k))]])
+    
+
+    # print(Gt)
+    # # print(np.shape(P))
+    # print(B)
+    # # print(np.shape(R))
+
+    
+    P_pre = Gt @ P @ Gt.T + B @ R @ B.T
+
+    # print('This is P_pre')
+    # print(P_pre)
+
+    return X_pre, P_pre
 
 
 def update(X_pre, P_pre, measure, measure_cov, k):
@@ -138,6 +225,39 @@ def update(X_pre, P_pre, measure, measure_cov, k):
     \return X Updated X state of shape (3 + 2k, 1).
     \return P Updated P covariance of shape (3 + 2k, 3 + 2k).
     '''
+
+    H = np.zeros((2*k, 3+2*k))
+    measurement = np.zeros((2*k, 1))
+    x, y, theta = X_pre[0,0], X_pre[1,0], X_pre[2,0]
+
+
+    for i in range(k):
+        lx, ly = X_pre[3+2*i,0], X_pre[3+2*i+1,0]
+        dx = lx - x
+        dy = ly - y
+        r = np.sqrt(dx**2 + dy**2)
+
+        Hp_i = np.array([[dy/r**2, -dx/r**2, -1],
+                        [-dx/r, -dy/r, 0]])
+        H[2*i:2*i+2, 0:3] = Hp_i
+        Hl_i = np.array([[-dy/r**2, dx/r**2],
+                        [dx/r, dy/r]])
+        H[2*i:2*i+2, 3+2*i:3+2*i+2] = Hl_i
+        # print('This is H')
+        # print(H)
+
+        measurement[2*i] = warp2pi(np.arctan2(dy, dx) - theta)
+        measurement[2*i+1] = r
+
+    Q = np.kron(np.eye(k), measure_cov)
+    # print('This is Q')
+    # print(Q)
+    
+
+    K = P_pre @ H.T @ np.linalg.inv(H @ P_pre @ H.T + Q)
+    X_pre = X_pre + K @ (measure - measurement)
+    P_pre = (np.eye(3+2*k) - K @ H) @ P_pre
+
 
     return X_pre, P_pre
 
@@ -157,6 +277,17 @@ def evaluate(X, P, k):
     plt.draw()
     plt.waitforbuttonpress(0)
 
+    l_pred = X[3:]
+
+    # Euclidean distance
+    euclidean = np.sqrt(np.sum((l_pred - l_true)**2))
+    print(f'Euclidean distance: {euclidean}')
+
+    # Mahalanobis distance
+    mahalanobis = np.sqrt((l_pred - l_true).T @ np.linalg.inv(P[3:, 3:]) @ (l_pred - l_true))
+    print(f'Mahalanobis distance: {mahalanobis}')
+
+
 
 def main():
     # TEST: Setup uncertainty parameters
@@ -175,7 +306,7 @@ def main():
     sig_r2 = sig_r**2
 
     # Open data file and read the initial measurements
-    data_file = open("../data/data.txt")
+    data_file = open("data/data.txt")
     line = data_file.readline()
     fields = re.split('[\t ]', line)[:-1]
     arr = np.array([float(field) for field in fields])
@@ -218,6 +349,7 @@ def main():
 
             ##########
             # TODO: predict step in EKF SLAM
+            # print('Got to predict step')
             X_pre, P_pre = predict(X, P, control, control_cov, k)
 
             draw_traj_and_pred(X_pre, P_pre)
