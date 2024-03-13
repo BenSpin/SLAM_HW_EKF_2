@@ -117,15 +117,9 @@ def init_landmarks(init_measure, init_measure_cov, init_pose, init_pose_cov):
     for i in range(k):
         beta, r = init_measure[2*i,0], init_measure[2*i+1,0]
         global_beta = float(warp2pi(beta + theta))
-        # print('This is global_beta')
-        # print(global_beta)
        
         lx = x + r * np.cos(global_beta)
-        # print('This is lx')
-        # print(lx)
         ly = y + r * np.sin(global_beta)
-        # print('This is ly')
-        # print(ly)
 
         landmarks[2*i,0] = lx
         landmarks[2*i+1,0] = ly
@@ -141,7 +135,6 @@ def init_landmarks(init_measure, init_measure_cov, init_pose, init_pose_cov):
         
         # Combine the two matricies
         J = np.hstack((Jp, Jk))
-        # print(np.shape(J))
 
         # Combine the inital pose covariance and the measurement covariance
         P = np.block([[init_pose_cov, np.zeros((3, 2))],
@@ -167,7 +160,7 @@ def predict(X, P, control, control_cov, k):
     \return P_pre Predicted P covariance of shape (3 + 2k, 3 + 2k).
     '''
     # control comes in as [d,alpha]
-    d , alpha = control[0], control[1]
+    d , alpha = control[0,0], control[1,0]
     x_t, y_t, theta_t = X[0,0], X[1,0], X[2,0]
     X_pre = np.zeros((3+2*k,1))
     P_pre = np.zeros((3+2*k,3+2*k))
@@ -184,28 +177,34 @@ def predict(X, P, control, control_cov, k):
 
     R = np.concatenate((control_cov, np.zeros((3,2*k))), axis=1)
     R = np.concatenate((R, np.zeros((2*k,2*k+3))), axis=0)
+    print('This is R')
+    print(R)
 
+    # This is the jacobian of the pose prediction to the pose
+    Gt = np.array([[1, 0, -d * np.sin(theta_t)],
+                [0, 1, d * np.cos(theta_t)],
+                [0, 0, 1]])
+    # Adding zeros and identity matrix to the jacobians to account for the landmarks
+    Gt = np.block([[Gt, np.zeros((3,2*k))],
+                    [np.zeros((2*k,3)), np.eye(2*k)]])
     
     # This is the jacobian of the pose prediction to the error in the control
-    Jt = np.array([[np.cos(theta_t), -np.sin(theta_t), 0],
+    Bt = np.array([[np.cos(theta_t), -np.sin(theta_t), 0],
                 [np.sin(theta_t), np.cos(theta_t), 0],
                 [0, 0, 1]])
     
     # Adding zeros and identity matrix to the jacobians to account for the landmarks
-    B = np.block([[Jt, np.zeros((3,2*k))],
-                    [np.zeros((2*k,3)), np.eye((2*k))]])
+    Bt = np.block([[Bt, np.zeros((3,2*k))],
+                    [np.zeros((2*k,3)), np.eye(2*k)]])
     
-    Gt = np.block([[Jt, np.zeros((3,2*k))],
-                    [np.zeros((2*k,3)), np.eye((2*k))]])
-    
-
+    # print('This is Gt')
     # print(Gt)
-    # # print(np.shape(P))
+    # print('This is B')
     # print(B)
-    # # print(np.shape(R))
+
 
     
-    P_pre = Gt @ P @ Gt.T + B @ R @ B.T
+    P_pre = Gt @ P @ Gt.T + Bt @ R @ Bt.T
 
     # print('This is P_pre')
     # print(P_pre)
@@ -279,13 +278,24 @@ def evaluate(X, P, k):
 
     l_pred = X[3:]
 
-    # Euclidean distance
-    euclidean = np.sqrt(np.sum((l_pred - l_true)**2))
-    print(f'Euclidean distance: {euclidean}')
+    # Euclidean distances
+    euclidean_distances = np.sqrt(((l_pred.reshape(-1, 2) - l_true.reshape(-1, 2))**2).sum(axis=1))
+    total_euclidean = np.sum(euclidean_distances)
+    print(f'Euclidean distance for each landmark: {euclidean_distances}')
+    print(f'Total Euclidean distance: {total_euclidean}')
 
-    # Mahalanobis distance
-    mahalanobis = np.sqrt((l_pred - l_true).T @ np.linalg.inv(P[3:, 3:]) @ (l_pred - l_true))
-    print(f'Mahalanobis distance: {mahalanobis}')
+    # Mahalanobis distances
+    mahal_distances = []
+
+    for i in range(k):
+        l = l_pred[2*i:2*i+2]
+        l_cov = P[3+2*i:3+2*i+2, 3+2*i:3+2*i+2]
+        mahal_distances.append(np.sqrt(l.T @ np.linalg.inv(l_cov) @ l))
+
+    mahal_distances = np.array(mahal_distances).flatten()
+    print(f'Mahalanobis distances for each landmark: {mahal_distances}')
+    print(f'Total Mahalanobis distance: {np.sum(mahal_distances)}')
+
 
 
 
