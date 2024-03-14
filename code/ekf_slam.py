@@ -249,8 +249,8 @@ def update(X_pre, P_pre, measure, measure_cov, k):
     Q = np.kron(np.eye(k), measure_cov)
     # print('This is Q')
     # print(Q)
-    print('This is H')
-    print(H)
+    # print('This is H')
+    # print(H)
     
 
     K = P_pre @ H.T @ np.linalg.inv(H @ P_pre @ H.T + Q)
